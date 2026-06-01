@@ -1,0 +1,15 @@
+{
+  "name": "WM 2026 Tipprunde",
+  "short_name": "WM26 Tipp",
+  "start_url": ".",
+  "display": "standalone",
+  "background_color": "#f8fafc",
+  "theme_color": "#0f172a",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='512' height='512'><rect width='512' height='512' fill='%230f172a'/><text x='256' y='280' font-size='200' fill='white' text-anchor='middle' dominant-baseline='middle'>🏆</text></svg>",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}

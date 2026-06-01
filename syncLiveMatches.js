@@ -1,0 +1,130 @@
+import { fetchFixturesByIds, fetchFirstGoalscorer } from './apiHandler.js';
+import { calculatePoints } from './pointsEngine.js';
+import { supabase } from './supabaseClient.js';
+import { sendErrorAlert } from './notifier.js';
+
+const STATUS_GROUPS = {
+  NOT_STARTED: ['TBD', 'NS'],
+  IN_PLAY: ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'SUSP', 'INT', 'LIVE'],
+  FINISHED: ['FT', 'AET', 'PEN'],
+  CANCELED: ['PST', 'CANC', 'ABD', 'AWD', 'WO']
+};
+
+export async function syncLiveMatches() {
+  const now = new Date();
+  const checkThreshold = new Date(now.getTime() + 5 * 60000); 
+
+  const { data: activeDbMatches, error: matchQueryError } = await supabase
+    .from('matches')
+    .select('id, api_id, status, points_processed, is_goalless')
+    .lte('kickoff_time', checkThreshold.toISOString())
+    .is('points_processed', false)
+    .not('status', 'in', `(${STATUS_GROUPS.CANCELED.map(s => `'${s}'`).join(',')})`);
+
+  if (matchQueryError) {
+    await sendErrorAlert('DB Query: activeDbMatches', matchQueryError);
+    return;
+  }
+
+  if (!activeDbMatches || activeDbMatches.length === 0) return;
+
+  const matchIdsToFetch = activeDbMatches.map(m => m.api_id);
+  const apiMatches = await fetchFixturesByIds(matchIdsToFetch);
+  
+  if (!apiMatches || apiMatches.length === 0) return;
+
+  for (const match of apiMatches) {
+    const apiMatchId = match.fixture.id;
+    const statusShort = match.fixture.status.short; 
+    const dbMatch = activeDbMatches.find(m => m.api_id === apiMatchId);
+
+    if (!dbMatch) continue;
+
+    // Semantisch klare Variablen: Inklusive Verlängerung, exklusive Elfmeterschießen
+    const homeScoreExclPenalties = match.goals.home ?? 0;
+    const awayScoreExclPenalties = match.goals.away ?? 0;
+    const homeScoreExtratime = match.score.extratime.home;
+    const awayScoreExtratime = match.score.extratime.away;
+
+    try {
+      await supabase
+        .from('matches')
+        .update({
+          status: statusShort,
+          home_score: homeScoreExclPenalties,
+          away_score: awayScoreExclPenalties,
+          home_score_extratime: homeScoreExtratime,
+          away_score_extratime: awayScoreExtratime,
+          updated_at: new Date().toISOString()
+        })
+        .eq('api_id', apiMatchId);
+
+      let firstGoalscorerId = null;
+      let isGoalless = false;
+
+      if (STATUS_GROUPS.IN_PLAY.includes(statusShort) || STATUS_GROUPS.FINISHED.includes(statusShort)) {
+        if (homeScoreExclPenalties > 0 || awayScoreExclPenalties > 0) {
+            firstGoalscorerId = await fetchFirstGoalscorer(apiMatchId);
+            if (firstGoalscorerId !== null) {
+               await supabase
+                .from('matches')
+                .update({ first_goalscorer_id: firstGoalscorerId, is_goalless: false })
+                .eq('api_id', apiMatchId);
+            }
+        } else if (STATUS_GROUPS.FINISHED.includes(statusShort)) {
+            isGoalless = true;
+            await supabase
+              .from('matches')
+              .update({ first_goalscorer_id: null, is_goalless: true })
+              .eq('api_id', apiMatchId);
+        }
+      }
+
+      if (STATUS_GROUPS.FINISHED.includes(statusShort)) {
+        console.log(`[Sync] Spiel ${apiMatchId} beendet (${statusShort}). Starte Punkteauswertung...`);
+        
+        const { data: bets, error: betsError } = await supabase
+          .from('bets')
+          .select('*')
+          .eq('match_id', dbMatch.id);
+
+        if (betsError) {
+          await sendErrorAlert(`DB Query: Bets für Spiel ${apiMatchId}`, betsError);
+          continue; // Blockiert das 'points_processed' Flag, damit es im nächsten Durchlauf nochmal probiert wird
+        }
+        
+        if (bets && bets.length > 0) {
+          // KRITISCH: Dies ist weiterhin eine extrem ineffiziente N+1 Abfrage.
+          for (const bet of bets) {
+            const points = calculatePoints(
+              homeScoreExclPenalties, 
+              awayScoreExclPenalties, 
+              bet.home_score, 
+              bet.away_score,
+              firstGoalscorerId,
+              bet.first_goalscorer_id,
+              isGoalless,
+              bet.is_goalless
+            );
+
+            await supabase
+              .from('bets')
+              .update({ points_awarded: points })
+              .eq('id', bet.id);
+          }
+        }
+
+        await supabase
+          .from('matches')
+          .update({ points_processed: true })
+          .eq('api_id', apiMatchId);
+
+        console.log(`[Sync] Punkte für Spiel ${apiMatchId} finalisiert.`);
+      }
+
+    } catch (err) {
+      console.error(`Fehler bei der Verarbeitung von Spiel ${apiMatchId}:`, err.message);
+      await sendErrorAlert(`SyncLiveMatches: Spiel ${apiMatchId}`, err);
+    }
+  }
+}
