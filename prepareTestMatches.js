@@ -10,11 +10,11 @@ const API_URL = 'https://v3.football.api-sports.io';
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 async function prepareTest() {
-  console.log("Starte Vorbereitung für den Live-Test (Hardcoded auf 2026-05-29)...");
+  console.log("Starte Vorbereitung für den Live-Test (Hardcoded auf 2026-06-02)...");
 
   try {
     // 1. Hardcoded Datum
-    const dateString = '2026-05-31';
+    const dateString = '2026-06-03';
     
     console.log(`Suche Freundschaftsspiele (League 10, Season 2026) für ${dateString}...`);
 
