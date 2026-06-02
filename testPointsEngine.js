@@ -51,6 +51,16 @@ const testCases = [
     name: "10. Typen-Sicherheit (Strings statt Integer aus DB)",
     params: ["2", "1", 2, 1, "99", 99], // API/DB liefert Strings
     expected: 4
+  },
+  {
+    name: "11. Boosted Bet verdoppelt Punkte",
+    params: [2, 1, 2, 1, 99, 99, false, false, true],
+    expected: 8
+  },
+  {
+    name: "12. Boosted Bet mit null Punkten bleibt null",
+    params: [0, 2, 1, 0, 99, 88, false, false, true],
+    expected: 0
   }
 ];
 

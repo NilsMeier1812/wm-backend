@@ -104,7 +104,8 @@ export async function syncLiveMatches() {
               firstGoalscorerId,
               bet.first_goalscorer_id,
               isGoalless,
-              bet.is_goalless
+              bet.is_goalless,
+              bet.is_boosted
             );
 
             await supabase

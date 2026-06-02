@@ -131,7 +131,7 @@ export async function fetchFirstGoalscorer(apiMatchId) {
     return null;
   }
 }
-export function calculatePoints(actualHome, actualAway, betHome, betAway, actualScorer, betScorer, actualIsGoalless = false, betIsGoalless = false) {
+export function calculatePoints(actualHome, actualAway, betHome, betAway, actualScorer, betScorer, actualIsGoalless = false, betIsGoalless = false, betIsBoosted = false) {
   // Integritätsprüfung
   if (
     actualHome === null || actualHome === undefined ||
@@ -174,6 +174,10 @@ export function calculatePoints(actualHome, actualAway, betHome, betAway, actual
       if (betScorer !== null && String(actualScorer) === String(betScorer)) {
         points += 1;
       }
+  }
+
+  if (betIsBoosted) {
+    points *= 2;
   }
 
   return points;
