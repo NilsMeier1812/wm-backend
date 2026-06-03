@@ -11,19 +11,23 @@ const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = 'https://v3.football.api-sports.io';
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+const REMINDER_INTERVALS = [12, 5, 1]; // In Stunden (absteigend)
+
 export async function fetchLineupsForUpcomingMatches() {
   const now = new Date();
-  const threshold = new Date(now.getTime() + 60 * 60000); // Exakt 60 Minuten in der Zukunft
+  // Wir schauen nun 12 Stunden (plus 5 Minuten Puffer) in die Zukunft für die Reminder
+  const threshold = new Date(now.getTime() + 12 * 60 * 60000 + 5 * 60000); 
 
   const { data: upcomingMatches, error: dbError } = await supabase
     .from('matches')
-    .select('id, api_id, kickoff_time, reminder_sent')
+    // Wichtig: 'sent_reminders' (JSONB-Array) statt 'reminder_sent' (Boolean) abfragen
+    .select('id, api_id, kickoff_time, sent_reminders')
     .lte('kickoff_time', threshold.toISOString())
     .gte('kickoff_time', now.toISOString())
     .not('status', 'in', '("FT", "AET", "PEN", "CANC", "PST", "ABD", "AWD", "WO")');
 
   if (dbError) {
-    console.error("Fehler beim Abfragen kommender Spiele (Lineup-Check):", dbError.message);
+    console.error("Fehler beim Abfragen kommender Spiele (Lineup/Reminder-Check):", dbError.message);
     await sendErrorAlert('PreMatchWorker: Fetch Matches', dbError);
     return;
   }
@@ -31,17 +35,39 @@ export async function fetchLineupsForUpcomingMatches() {
   if (!upcomingMatches || upcomingMatches.length === 0) return;
 
   for (const match of upcomingMatches) {
+    const kickoffTime = new Date(match.kickoff_time);
+    const hoursUntilMatch = (kickoffTime - now) / (1000 * 60 * 60);
+
     // --- TEIL 1: ERINNERUNGEN FÜR FEHLENDE TIPPS VERSENDEN ---
-    if (!match.reminder_sent) {
-      try {
-        await sendMissingTipReminders(match.id, match.kickoff_time);
-      } catch (reminderError) {
-        console.error(`Fehler beim Versenden der Reminder für Spiel ${match.id}:`, reminderError);
-        await sendErrorAlert(`Reminder-System: Spiel ${match.id}`, reminderError);
+    const sentReminders = match.sent_reminders || [];
+
+    for (const interval of REMINDER_INTERVALS) {
+      if (hoursUntilMatch <= interval && hoursUntilMatch > 0 && !sentReminders.includes(interval)) {
+        try {
+          // Wir übergeben das aktuelle Intervall an die Funktion
+          await sendMissingTipReminders(match.id, match.kickoff_time, interval);
+          
+          // Status in DB aktualisieren, damit Mail nicht mehrfach rausgeht
+          sentReminders.push(interval);
+          await supabase
+            .from('matches')
+            .update({ sent_reminders: sentReminders })
+            .eq('id', match.id);
+            
+          break; // Max 1 Reminder pro Worker-Durchlauf versenden
+        } catch (reminderError) {
+          console.error(`Fehler beim Versenden des ${interval}h Reminders für Spiel ${match.id}:`, reminderError);
+          await sendErrorAlert(`Reminder-System: Spiel ${match.id} (${interval}h)`, reminderError);
+        }
       }
     }
 
     // --- TEIL 2: STARTELF & AUSWECHSELSPIELER ABRUFEN ---
+    // Lineups machen erst ab ca. 1 Stunde (bzw. 1.2 Stunden = 72 Min) vorher Sinn!
+    if (hoursUntilMatch > 1.2) {
+      continue; 
+    }
+
     const { count, error: countError } = await supabase
       .from('match_lineups')
       .select('*', { count: 'exact', head: true })
@@ -67,7 +93,6 @@ export async function fetchLineupsForUpcomingMatches() {
 
       const data = apiResponse.data;
 
-      // API-Sports Fehler-Handling (Soft-Errors im Body)
       const apiErrors = data?.errors;
       const hasErrors = Array.isArray(apiErrors) ? apiErrors.length > 0 : (apiErrors && Object.keys(apiErrors).length > 0);
       
@@ -110,7 +135,7 @@ export async function fetchLineupsForUpcomingMatches() {
 
       // --- SCHRITT 2: Spielerdaten (Starter + Bank) extrahieren ---
       const playersToUpsert = [];
-      const lineupDefinitions = []; // Speichert die Zuordnung, bevor wir die interne DB-ID haben
+      const lineupDefinitions = []; 
 
       for (const teamLineup of lineups) {
         const teamApiId = teamLineup.team?.id;
@@ -178,7 +203,6 @@ export async function fetchLineupsForUpcomingMatches() {
          continue; 
       }
 
-      // Mapping von api_id auf interne player_id erstellen
       const playerIdMap = {};
       for (const p of upsertedPlayers) {
          playerIdMap[p.api_id] = p.id;
@@ -222,8 +246,8 @@ export async function fetchLineupsForUpcomingMatches() {
  * Ermittelt alle Nutzer, die für ein bestimmtes Spiel noch keinen Tipp abgegeben haben,
  * und sendet ihnen eine gesammelte Benachrichtigung via Resend Batch-API.
  */
-async function sendMissingTipReminders(matchId, kickoffTime) {
-  console.log(`[Reminder] Prüfe fehlende Tipps für Spiel-ID ${matchId}...`);
+async function sendMissingTipReminders(matchId, kickoffTime, interval) {
+  console.log(`[Reminder] Prüfe fehlende Tipps für Spiel-ID ${matchId} (${interval}h-Reminder)...`);
 
   // 1. Hole alle User-IDs, die für dieses Spiel bereits einen validen Tipp abgegeben haben
   const { data: existingBets, error: betsError } = await supabase
@@ -250,10 +274,9 @@ async function sendMissingTipReminders(matchId, kickoffTime) {
 
   if (profilesError) throw profilesError;
 
-  // 3. Wenn alle getippt haben, setzen wir nur das Flag und brechen ab
+  // 3. Abbruch, falls alle getippt haben (Das Update der DB erfolgt in der Hauptschleife)
   if (!usersToRemind || usersToRemind.length === 0) {
-    await supabase.from('matches').update({ reminder_sent: true }).eq('id', matchId);
-    console.log(`[Reminder] Alle Nutzer haben für Spiel ${matchId} bereits getippt.`);
+    console.log(`[Reminder] Alle Nutzer haben für Spiel ${matchId} bereits getippt (${interval}h).`);
     return;
   }
 
@@ -264,6 +287,8 @@ async function sendMissingTipReminders(matchId, kickoffTime) {
     minute: '2-digit' 
   });
   
+  const hourText = interval === 1 ? 'einer Stunde' : `${interval} Stunden`;
+
   const emailBatch = usersToRemind.map(user => ({
     from: `WM Tippspiel <${process.env.ALERT_FROM_EMAIL}>`,
     to: [user.email],
@@ -271,7 +296,7 @@ async function sendMissingTipReminders(matchId, kickoffTime) {
     html: `
       <h2>Dein Tipp fehlt noch!</h2>
       <p>Hallo,</p>
-      <p>in knapp 60 Minuten beginnt das nächste Spiel der Weltmeisterschaft 2026.</p>
+      <p>in knapp ${hourText} beginnt das nächste Spiel der Weltmeisterschaft 2026.</p>
       <p>Du hast für dieses Spiel noch keinen Tipp abgegeben. Geh jetzt auf die Website, um deine Punkte nicht zu verspielen!</p>
       <br>
       <p>Viel Erfolg,<br>Nils</p>
@@ -284,16 +309,9 @@ async function sendMissingTipReminders(matchId, kickoffTime) {
     const chunk = emailBatch.slice(i, i + chunkSize);
     const { error: resendError } = await resend.batch.send(chunk);
     if (resendError) {
-      // Stringifizierung, um [object Object] Fehler in der Notifier-Kette zu verhindern
       throw new Error(`Resend Batch-Fehler: ${JSON.stringify(resendError)}`);
     }
   }
 
-  // 6. Spiel als "erinnert" markieren
-  await supabase
-    .from('matches')
-    .update({ reminder_sent: true })
-    .eq('id', matchId);
-
-  console.log(`[Reminder] ${emailBatch.length} Erinnerungs-E-Mails für Spiel ${matchId} versendet.`);
+  console.log(`[Reminder] ${emailBatch.length} Erinnerungs-E-Mails für Spiel ${matchId} (${interval}h) versendet.`);
 }

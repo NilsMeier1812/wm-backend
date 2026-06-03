@@ -1,4 +1,4 @@
-import { fetchFixturesByIds, fetchFirstGoalscorer } from './apiHandler.js';
+import { fetchFixturesByIds, syncMatchEvents } from './apiHandler.js';
 import { calculatePoints } from './pointsEngine.js';
 import { supabase } from './supabaseClient.js';
 import { sendErrorAlert } from './notifier.js';
@@ -40,7 +40,6 @@ export async function syncLiveMatches() {
 
     if (!dbMatch) continue;
 
-    // Semantisch klare Variablen: Inklusive Verlängerung, exklusive Elfmeterschießen
     const homeScoreExclPenalties = match.goals.home ?? 0;
     const awayScoreExclPenalties = match.goals.away ?? 0;
     const homeScoreExtratime = match.score.extratime.home;
@@ -62,10 +61,13 @@ export async function syncLiveMatches() {
       let firstGoalscorerId = null;
       let isGoalless = false;
 
+      // Ereignisse für alle laufenden oder beendeten Spiele abrufen
       if (STATUS_GROUPS.IN_PLAY.includes(statusShort) || STATUS_GROUPS.FINISHED.includes(statusShort)) {
+        const fetchedFirstGoalscorerId = await syncMatchEvents(apiMatchId, dbMatch.id);
+
         if (homeScoreExclPenalties > 0 || awayScoreExclPenalties > 0) {
-            firstGoalscorerId = await fetchFirstGoalscorer(apiMatchId);
-            if (firstGoalscorerId !== null) {
+            if (fetchedFirstGoalscorerId !== null) {
+               firstGoalscorerId = fetchedFirstGoalscorerId;
                await supabase
                 .from('matches')
                 .update({ first_goalscorer_id: firstGoalscorerId, is_goalless: false })
@@ -90,11 +92,10 @@ export async function syncLiveMatches() {
 
         if (betsError) {
           await sendErrorAlert(`DB Query: Bets für Spiel ${apiMatchId}`, betsError);
-          continue; // Blockiert das 'points_processed' Flag, damit es im nächsten Durchlauf nochmal probiert wird
+          continue;
         }
         
         if (bets && bets.length > 0) {
-          // KRITISCH: Dies ist weiterhin eine extrem ineffiziente N+1 Abfrage.
           for (const bet of bets) {
             const points = calculatePoints(
               homeScoreExclPenalties, 

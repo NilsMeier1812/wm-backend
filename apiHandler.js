@@ -65,59 +65,114 @@ export async function fetchFixturesByIds(apiMatchIds) {
  * Übersetzt die API-ID direkt in die interne Datenbank-ID.
  * Eigentore werden hier explizit mitgewertet.
  */
-export async function fetchFirstGoalscorer(apiMatchId) {
+export async function syncMatchEvents(apiMatchId, dbMatchId) {
   const canFetch = await checkApiLimits();
   if (!canFetch) return null;
 
   try {
     const response = await axios.get(`${API_URL}/fixtures/events`, {
       headers: { 'x-apisports-key': API_KEY },
-      params: { fixture: apiMatchId, type: 'Goal' }
+      params: { fixture: apiMatchId }
     });
 
     await incrementApiCounter();
 
     const events = response.data?.response;
-    if (!events || !Array.isArray(events) || events.length === 0) return null;
+    if (!events || !Array.isArray(events)) return null;
 
-    const validGoals = events.filter(event => {
-      if (event.type !== 'Goal' || !event.detail) return false;
-      const detail = event.detail.toLowerCase();
-      // Annullierte Tore und verschossene Elfmeter ignorieren.
-      // Eigentore werden absichtlich NICHT herausgefiltert.
-      return !detail.includes('cancelled') && 
-             !detail.includes('missed');
+    // IDs sammeln, um N+1-Abfragen zu verhindern
+    const apiPlayerIds = [];
+    const apiTeamIds = [];
+
+    events.forEach(e => {
+      if (e.player?.id) apiPlayerIds.push(e.player.id);
+      if (e.team?.id) apiTeamIds.push(e.team.id);
     });
 
-    if (validGoals.length === 0) return null;
+    const uniqueApiPlayerIds = [...new Set(apiPlayerIds)];
+    const uniqueApiTeamIds = [...new Set(apiTeamIds)];
 
-    // Zeitlich sortieren, um wirklich das erste Tor zu finden
-    validGoals.sort((a, b) => {
-      const timeA = a.time.elapsed + (a.time.extra || 0);
-      const timeB = b.time.elapsed + (b.time.extra || 0);
-      return timeA - timeB;
-    });
+    let playerMap = {};
+    let teamMap = {};
 
-    const apiPlayerId = validGoals[0].player ? validGoals[0].player.id : null;
-    
-    if (!apiPlayerId) return null;
-
-    // Interne Supabase-ID des Spielers auflösen
-    const { data: player, error } = await supabase
-      .from('players')
-      .select('id')
-      .eq('api_id', apiPlayerId)
-      .single();
-
-    if (error || !player) {
-      console.warn(`Spieler mit API-ID ${apiPlayerId} nicht in der internen DB gefunden (Spiel ${apiMatchId}).`);
-      return null;
+    if (uniqueApiPlayerIds.length > 0) {
+      const { data: players } = await supabase
+        .from('players')
+        .select('id, api_id')
+        .in('api_id', uniqueApiPlayerIds);
+      if (players) {
+        playerMap = Object.fromEntries(players.map(p => [p.api_id, p.id]));
+      }
     }
 
-    return player.id;
-    
+    if (uniqueApiTeamIds.length > 0) {
+      const { data: teams } = await supabase
+        .from('teams')
+        .select('id, api_id')
+        .in('api_id', uniqueApiTeamIds);
+      if (teams) {
+        teamMap = Object.fromEntries(teams.map(t => [t.api_id, t.id]));
+      }
+    }
+
+    const dbEvents = [];
+    let firstGoalscorerId = null;
+    let earliestGoalTime = Infinity;
+
+    for (const e of events) {
+      const apiPlayerId = e.player?.id;
+      const apiTeamId = e.team?.id;
+
+      const dbPlayerId = playerMap[apiPlayerId] || null;
+      const dbTeamId = teamMap[apiTeamId] || null;
+
+      // Da player_id im Schema der match_events-Tabelle genutzt wird,
+      // müssen Ereignisse ohne zugeordneten Spieler ignoriert werden.
+      if (!dbPlayerId) continue;
+
+      const detail = e.detail || '';
+      const detailLower = detail.toLowerCase();
+
+      let finalEventType = e.type;
+      
+      // Kritische Bereinigung: Verhindert falsche Zählungen im View
+      if (e.type === 'Goal' && (detailLower.includes('missed') || detailLower.includes('cancelled'))) {
+        finalEventType = 'Goal_Invalid';
+      }
+
+      dbEvents.push({
+        match_id: dbMatchId,
+        team_id: dbTeamId,
+        player_id: dbPlayerId,
+        event_type: finalEventType,
+        event_detail: e.detail || null,
+        time_minute: e.time.elapsed,
+        time_extra: e.time.extra || null
+      });
+
+      // Ersten Torschützen ermitteln (Eigentore absichtlich eingeschlossen)
+      if (e.type === 'Goal' && !detailLower.includes('missed') && !detailLower.includes('cancelled')) {
+        const absoluteTime = e.time.elapsed + (e.time.extra || 0);
+        if (absoluteTime < earliestGoalTime) {
+          earliestGoalTime = absoluteTime;
+          firstGoalscorerId = dbPlayerId;
+        }
+      }
+    }
+
+    // Löschen alter Einträge für dieses Spiel, um Duplikate bei Live-Updates zu vermeiden
+    await supabase.from('match_events').delete().eq('match_id', dbMatchId);
+
+    if (dbEvents.length > 0) {
+      const { error: insertError } = await supabase.from('match_events').insert(dbEvents);
+      if (insertError) {
+        console.error(`Fehler beim Schreiben der match_events für Spiel ${dbMatchId}:`, insertError.message);
+      }
+    }
+
+  return firstGoalscorerId;
   } catch (error) {
-    console.error(`Fehler bei Event-Abfrage für Spiel ${apiMatchId}:`, error.message);
-    return null; 
+    console.error(`Fehler bei Event-Verarbeitung für Spiel ${apiMatchId}:`, error.message);
+    return null;
   }
 }
