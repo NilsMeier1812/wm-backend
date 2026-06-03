@@ -7,10 +7,6 @@ dotenv.config();
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-/**
- * Holt alle Spiele im angegebenen Zeitfenster (hoursAhead) und sendet
- * gebündelte Erinnerungen an User, die noch nicht getippt haben.
- */
 export async function runFixedReminders(hoursAhead, contextTitle) {
   console.log(`[Scheduled Reminder] Starte Check für die nächsten ${hoursAhead} Stunden...`);
   
@@ -19,14 +15,23 @@ export async function runFixedReminders(hoursAhead, contextTitle) {
 
   const { data: upcomingMatches, error: dbError } = await supabase
     .from('matches')
-    .select('id, api_id, kickoff_time, sent_reminders')
+    // WICHTIG: Hier laden wir die Team-Namen via Supabase Join direkt mit.
+    // Passe "home_team_id" und "away_team_id" an deine echten Spaltennamen in 'matches' an!
+    .select(`
+      id, 
+      api_id, 
+      kickoff_time, 
+      sent_reminders,
+      home:teams!home_team_id(name),
+      away:teams!away_team_id(name)
+    `)
     .lte('kickoff_time', threshold.toISOString())
     .gte('kickoff_time', now.toISOString())
     .not('status', 'in', '("FT", "AET", "PEN", "CANC", "PST", "ABD", "AWD", "WO")');
 
   if (dbError) {
     console.error(`[Scheduled Reminder] Fehler beim Abfragen der Spiele für ${hoursAhead}h:`, dbError.message);
-    throw dbError; // Wird vom Cronjob in index.js gefangen
+    throw dbError; 
   }
 
   if (!upcomingMatches || upcomingMatches.length === 0) {
@@ -34,17 +39,13 @@ export async function runFixedReminders(hoursAhead, contextTitle) {
     return;
   }
 
-  // Label für die Datenbank, z.B. "24h_daily" oder "12h_daily"
   const reminderLabel = `${hoursAhead}h_daily`;
-
-  // Filtern: Nur Spiele nehmen, die diesen speziellen Daily-Reminder noch nicht hatten
   const matchesToRemind = upcomingMatches.filter(m => !(m.sent_reminders || []).includes(reminderLabel));
 
   if (matchesToRemind.length > 0) {
     try {
       await sendBundledReminders(matchesToRemind, contextTitle);
 
-      // In der DB eintragen, dass der Reminder (z.B. "24h_daily") für diese Spiele verschickt wurde
       for (const m of matchesToRemind) {
         const updatedReminders = [...(m.sent_reminders || []), reminderLabel];
         const { error: updateError } = await supabase
@@ -65,15 +66,10 @@ export async function runFixedReminders(hoursAhead, contextTitle) {
   }
 }
 
-/**
- * Versendet eine gebündelte E-Mail an Nutzer, die für mindestens eines 
- * der übergebenen Spiele noch keinen Tipp haben. (Identisch zur Logik in preMatchWorker)
- */
 async function sendBundledReminders(matches, contextTitle) {
   console.log(`[Reminder] Bündele ${matches.length} Spiele für: ${contextTitle}...`);
   const matchIds = matches.map(m => m.id);
 
-  // 1. Alle Tipps für diese Spiele holen
   const { data: bets, error: betsError } = await supabase
     .from('bets')
     .select('user_id, match_id')
@@ -82,7 +78,6 @@ async function sendBundledReminders(matches, contextTitle) {
 
   if (betsError) throw betsError;
 
-  // 2. Alle Profile holen, die Erinnerungen wünschen
   const { data: users, error: usersError } = await supabase
     .from('profiles')
     .select('id, email')
@@ -92,17 +87,12 @@ async function sendBundledReminders(matches, contextTitle) {
 
   const emailBatch = [];
 
-  // 3. Pro User prüfen, ob Tipps fehlen
   for (const user of users) {
     const userBets = bets.filter(b => b.user_id === user.id).map(b => b.match_id);
-    
-    // Welche der anstehenden Spiele fehlen dem User?
     const missingMatches = matches.filter(m => !userBets.includes(m.id));
 
     if (missingMatches.length > 0) {
-      // HTML-Liste der fehlenden Spiele bauen
       const matchHtmlList = missingMatches.map(m => {
-        // Tag + Uhrzeit (z.B. "12.06. 15:00 Uhr")
         const timeString = new Date(m.kickoff_time).toLocaleString('de-DE', { 
           timeZone: 'Europe/Berlin', 
           day: '2-digit',
@@ -111,7 +101,11 @@ async function sendBundledReminders(matches, contextTitle) {
           minute: '2-digit' 
         });
         
-        return `<li><strong>${timeString} Uhr:</strong> WM-Spiel (API-ID: ${m.api_id})</li>`;
+        // Die Namen aus dem Supabase-Join sicher extrahieren
+        const homeName = m.home?.name || 'Unbekannt';
+        const awayName = m.away?.name || 'Unbekannt';
+        
+        return `<li><strong>${timeString} Uhr:</strong> ${homeName} vs. ${awayName}</li>`;
       }).join('');
 
       emailBatch.push({
@@ -120,7 +114,7 @@ async function sendBundledReminders(matches, contextTitle) {
         subject: `⏳ Tipp nicht vergessen! (${missingMatches.length} anstehende Spiele)`,
         html: `
           <h2>Deine Tipps fehlen noch!</h2>
-          <p>Hallo,</p>
+          <p>Servus,</p>
           <p>${contextTitle}. Für folgende Spiele hast du noch keinen Tipp abgegeben:</p>
           <ul>${matchHtmlList}</ul>
           <p>Geh jetzt auf die Website und trage deine Tipps ein, um keine Punkte zu verpassen!</p>
@@ -135,7 +129,6 @@ async function sendBundledReminders(matches, contextTitle) {
     return;
   }
 
-  // 4. Batch-Versand über Resend
   const chunkSize = 100;
   for (let i = 0; i < emailBatch.length; i += chunkSize) {
     const chunk = emailBatch.slice(i, i + chunkSize);
