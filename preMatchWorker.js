@@ -5,8 +5,6 @@ import { Resend } from 'resend';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
-dotenv.config();
-
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = 'https://v3.football.api-sports.io';
 const resend = new Resend(process.env.RESEND_API_KEY);

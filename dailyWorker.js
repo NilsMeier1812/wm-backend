@@ -2,8 +2,6 @@ import { supabase } from './supabaseClient.js';
 import axios from 'axios';
 import dotenv from 'dotenv';
 
-dotenv.config();
-
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = 'https://v3.football.api-sports.io';
 
