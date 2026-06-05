@@ -44,7 +44,9 @@ export async function syncLiveMatches() {
     const awayScoreExclPenalties = match.goals.away ?? 0;
     const homeScoreExtratime = match.score.extratime.home;
     const awayScoreExtratime = match.score.extratime.away;
-
+    const homeScorePenalty = match.score.penalty.home; // NEU
+    const awayScorePenalty = match.score.penalty.away; // NEU
+    
     try {
       await supabase
         .from('matches')
@@ -54,6 +56,8 @@ export async function syncLiveMatches() {
           away_score: awayScoreExclPenalties,
           home_score_extratime: homeScoreExtratime,
           away_score_extratime: awayScoreExtratime,
+          home_score_penalty: homeScorePenalty, // NEU
+          away_score_penalty: awayScorePenalty, // NEU
           updated_at: new Date().toISOString()
         })
         .eq('api_id', apiMatchId);
