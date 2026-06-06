@@ -4,6 +4,7 @@ import { fetchLineupsForUpcomingMatches } from './preMatchWorker.js';
 import { runDailySync } from './dailyWorker.js';
 import { sendErrorAlert } from './notifier.js';
 import { runFixedReminders } from './scheduledReminders.js';
+import { placeBotBets } from './botWorker.js';
 
 // --- GLOBALE FEHLERABFANGUNG ---
 process.on('uncaughtException', async (error) => {
@@ -23,6 +24,7 @@ let isPreMatchChecking = false;
 let isDailySyncing = false;
 let isMorningReminderRunning = false;
 let isEveningReminderRunning = false;
+let isBotRunning = false;
 
 console.log(`[${new Date().toISOString()}] WM 2026 Backend Scheduler gestartet...`);
 
@@ -93,6 +95,19 @@ cron.schedule('0 18 * * *', async () => {
     await sendErrorAlert('Cron: Evening-Reminder', error);
   } finally {
     isEveningReminderRunning = false;
+  }
+});
+// 6. Bot-Wetten platzieren (Alle 10 Minuten)
+cron.schedule('*/10 * * * *', async () => {
+  if (isBotRunning) return;
+  isBotRunning = true;
+  try {
+    await placeBotBets();
+  } catch (error) {
+    console.error("Kritischer Fehler im Bot-Zyklus:", error);
+    await sendErrorAlert('Cron: Bot-Tipps', error);
+  } finally {
+    isBotRunning = false;
   }
 });
 
