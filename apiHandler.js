@@ -21,7 +21,7 @@ export async function checkApiLimits() {
   return true;
 }
 
-async function incrementApiCounter() {
+export async function incrementApiCounter() {
   const { data: currentState } = await supabase.from('system_state').select('count_calls').single();
   if (currentState) {
     await supabase.from('system_state').update({ count_calls: currentState.count_calls + 1 }).eq('id', 1);

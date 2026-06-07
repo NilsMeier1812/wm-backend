@@ -80,13 +80,19 @@ export async function runDailySync() {
 
         const squadData = squadResponse.data.response;
         if (squadData && squadData.length > 0 && squadData[0].players) {
-          const playersToInsert = squadData[0].players.map(p => ({
-            api_id: p.id,
-            name: p.name,
-            position: p.position || null,
-            team_id: team.id,
-            created_at: new Date().toISOString()
-          }));
+          const uniquePlayersMap = new Map();
+
+          for (const p of squadData[0].players) {
+            uniquePlayersMap.set(p.id, {
+              api_id: p.id,
+              name: p.name,
+              position: p.position || null,
+              team_id: team.id,
+              created_at: new Date().toISOString()
+            });
+          }
+
+          const playersToInsert = Array.from(uniquePlayersMap.values());
 
           const { error: upsertError } = await supabase.from('players').upsert(playersToInsert, { onConflict: 'api_id' });
           if (upsertError) console.error(`DB-Fehler bei Kader für ${team.name}:`, upsertError.message);
