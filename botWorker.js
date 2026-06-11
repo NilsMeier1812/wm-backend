@@ -214,7 +214,8 @@ import { checkApiLimits, incrementApiCounter } from './apiHandler.js';
 
 const API_KEY = process.env.API_FOOTBALL_KEY;
 const API_URL = 'https://v3.football.api-sports.io';
-const BOT_UUID = 'a17b3ca0-c358-4d7a-9046-bd2bc4d522d7';
+const BOT_UUID = 'de06601a-4907-4610-a984-4b46c06a4d56';
+
 
 // --- HILFSFUNKTIONEN ---
 

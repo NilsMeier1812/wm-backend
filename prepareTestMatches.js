@@ -14,7 +14,7 @@ async function prepareTest() {
 
   try {
     // 1. Hardcoded Datum
-    const dateString = '2026-06-07';
+    const dateString = '2026-06-10';
     
     console.log(`Suche Freundschaftsspiele (League 10, Season 2026) für ${dateString}...`);
 
