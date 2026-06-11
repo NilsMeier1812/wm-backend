@@ -304,8 +304,8 @@ export async function placeBotBets() {
   console.log(`[Bot Debug] Bot-User verifiziert. Fahre fort.`);
 
   const now = new Date();
-  const threshold45m = new Date(now.getTime() + 45 * 60000);
-  const threshold15m = new Date(now.getTime() + 15 * 60000);
+  const threshold45m = new Date(now.getTime() + 30 * 60000);
+  const threshold15m = new Date(now.getTime() + 5 * 60000);
 
   console.log(`[Bot Debug] Suche Spiele zwischen ${threshold15m.toLocaleTimeString()} und ${threshold45m.toLocaleTimeString()}`);
 
