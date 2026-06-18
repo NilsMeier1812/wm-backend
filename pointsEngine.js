@@ -129,7 +129,65 @@ export async function fetchFirstGoalscorer(apiMatchId) {
     return null;
   }
 }
-export function calculatePoints(actualHome, actualAway, betHome, betAway, actualScorer, betScorer, actualIsGoalless = false, betIsGoalless = false, betIsBoosted = false) {
+/**
+ * Tendenz eines Tipps: 1 = Heimsieg, 0 = Unentschieden, -1 = Auswärtssieg.
+ * Gibt null zurück, wenn der Tipp unvollständig ist (kein Score getippt).
+ */
+export function betTendency(bet) {
+  if (bet.home_score === null || bet.home_score === undefined ||
+      bet.away_score === null || bet.away_score === undefined) {
+    return null;
+  }
+  return Math.sign(parseInt(bet.home_score, 10) - parseInt(bet.away_score, 10));
+}
+
+/**
+ * Torschützen-Schlüssel eines Tipps: Spieler-ID (als String), 'goalless' bei
+ * Tipp "Kein Tor", oder null wenn der Torschützen-Tipp unvollständig ist.
+ */
+export function betScorerKey(bet) {
+  if (bet.is_goalless === true) return 'goalless';
+  if (bet.first_goalscorer_id !== null && bet.first_goalscorer_id !== undefined) {
+    return String(bet.first_goalscorer_id);
+  }
+  return null;
+}
+
+/**
+ * Ermittelt für einen einzelnen Tipp, ob er ein Underdog-Tipp ist – also ob er
+ * der EINZIGE korrekte Tipp unter allen abgegebenen Tipps des Spiels ist.
+ *
+ * @param {object} bet            Der zu prüfende Tipp.
+ * @param {object[]} allBets      Alle Tipps des Spiels (inkl. bet selbst).
+ * @param {number|string} actualHome  Tatsächliche Heim-Tore (inkl. Verlängerung).
+ * @param {number|string} actualAway  Tatsächliche Auswärts-Tore (inkl. Verlängerung).
+ * @param {string|null} actualScorerKey  Tatsächlicher Torschützen-Schlüssel:
+ *        Spieler-ID (String), 'goalless', oder null (kein valider Schütze bekannt).
+ * @returns {{isUnderdogTendency: boolean, isUnderdogScorer: boolean}}
+ */
+export function computeUnderdogFlags(bet, allBets, actualHome, actualAway, actualScorerKey) {
+  const result = { isUnderdogTendency: false, isUnderdogScorer: false };
+  if (!Array.isArray(allBets) || allBets.length === 0) return result;
+
+  // --- Tendenz-Underdog ---
+  const actualTendency = Math.sign(parseInt(actualHome, 10) - parseInt(actualAway, 10));
+  const myTendency = betTendency(bet);
+  if (myTendency !== null && myTendency === actualTendency) {
+    const correctCount = allBets.filter(b => betTendency(b) === actualTendency).length;
+    if (correctCount === 1) result.isUnderdogTendency = true;
+  }
+
+  // --- Torschützen-Underdog ('goalless' zählt mit) ---
+  const myScorerKey = betScorerKey(bet);
+  if (actualScorerKey !== null && myScorerKey !== null && myScorerKey === actualScorerKey) {
+    const correctCount = allBets.filter(b => betScorerKey(b) === actualScorerKey).length;
+    if (correctCount === 1) result.isUnderdogScorer = true;
+  }
+
+  return result;
+}
+
+export function calculatePoints(actualHome, actualAway, betHome, betAway, actualScorer, betScorer, actualIsGoalless = false, betIsGoalless = false, betIsBoosted = false, isUnderdogTendency = false, isUnderdogScorer = false) {
   // Integritätsprüfung
   if (
     actualHome === null || actualHome === undefined ||
@@ -173,6 +231,11 @@ export function calculatePoints(actualHome, actualAway, betHome, betAway, actual
         points += 1;
       }
   }
+
+  // 3. Underdog-Boni: je +1, wenn der User der einzige korrekte Tipper ist.
+  //    Zählen zur Basis und werden daher vom Boost mitverdoppelt.
+  if (isUnderdogTendency) points += 1;
+  if (isUnderdogScorer) points += 1;
 
   if (betIsBoosted) {
     points *= 2;

@@ -1,5 +1,5 @@
 import { fetchFixturesByIds, syncMatchEvents } from './apiHandler.js';
-import { calculatePoints } from './pointsEngine.js';
+import { calculatePoints, computeUnderdogFlags } from './pointsEngine.js';
 import { supabase } from './supabaseClient.js';
 import { sendErrorAlert } from './notifier.js';
 
@@ -100,17 +100,35 @@ export async function syncLiveMatches() {
         }
         
         if (bets && bets.length > 0) {
+          // Tatsächlicher Torschützen-Schlüssel für die Underdog-Auswertung.
+          // 'goalless' zählt als Torschützen-Tipp; null = kein valider Schütze bekannt.
+          const actualScorerKey = isGoalless
+            ? 'goalless'
+            : (firstGoalscorerId !== null && firstGoalscorerId !== undefined
+                ? String(firstGoalscorerId)
+                : null);
+
           for (const bet of bets) {
+            const { isUnderdogTendency, isUnderdogScorer } = computeUnderdogFlags(
+              bet,
+              bets,
+              homeScoreExclPenalties,
+              awayScoreExclPenalties,
+              actualScorerKey
+            );
+
             const points = calculatePoints(
-              homeScoreExclPenalties, 
-              awayScoreExclPenalties, 
-              bet.home_score, 
+              homeScoreExclPenalties,
+              awayScoreExclPenalties,
+              bet.home_score,
               bet.away_score,
               firstGoalscorerId,
               bet.first_goalscorer_id,
               isGoalless,
               bet.is_goalless,
-              bet.is_boosted
+              bet.is_boosted,
+              isUnderdogTendency,
+              isUnderdogScorer
             );
 
             await supabase
