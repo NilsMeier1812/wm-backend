@@ -10,9 +10,14 @@ const STATUS_GROUPS = {
   CANCELED: ['PST', 'CANC', 'ABD', 'AWD', 'WO']
 };
 
+/**
+ * Synchronisiert laufende/anstehende Spiele und wertet beendete Spiele aus.
+ * @returns {Promise<number>} Anzahl der in diesem Lauf neu beendeten Spiele.
+ */
 export async function syncLiveMatches() {
   const now = new Date();
-  const checkThreshold = new Date(now.getTime() + 5 * 60000); 
+  const checkThreshold = new Date(now.getTime() + 5 * 60000);
+  let newlyFinishedCount = 0;
 
   const { data: activeDbMatches, error: matchQueryError } = await supabase
     .from('matches')
@@ -23,15 +28,15 @@ export async function syncLiveMatches() {
 
   if (matchQueryError) {
     await sendErrorAlert('DB Query: activeDbMatches', matchQueryError);
-    return;
+    return 0;
   }
 
-  if (!activeDbMatches || activeDbMatches.length === 0) return;
+  if (!activeDbMatches || activeDbMatches.length === 0) return 0;
 
   const matchIdsToFetch = activeDbMatches.map(m => m.api_id);
   const apiMatches = await fetchFixturesByIds(matchIdsToFetch);
   
-  if (!apiMatches || apiMatches.length === 0) return;
+  if (!apiMatches || apiMatches.length === 0) return 0;
 
   for (const match of apiMatches) {
     const apiMatchId = match.fixture.id;
@@ -143,6 +148,7 @@ export async function syncLiveMatches() {
           .update({ points_processed: true })
           .eq('api_id', apiMatchId);
 
+        newlyFinishedCount++;
         console.log(`[Sync] Punkte für Spiel ${apiMatchId} finalisiert.`);
       }
 
@@ -151,4 +157,6 @@ export async function syncLiveMatches() {
       await sendErrorAlert(`SyncLiveMatches: Spiel ${apiMatchId}`, err);
     }
   }
+
+  return newlyFinishedCount;
 }

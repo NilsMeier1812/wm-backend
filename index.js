@@ -5,6 +5,7 @@ import { runDailySync } from './dailyWorker.js';
 import { sendErrorAlert } from './notifier.js';
 import { runFixedReminders } from './scheduledReminders.js';
 import { placeBotBets } from './botWorker.js';
+import { syncFixtures } from './fixtureSync.js';
 
 // --- GLOBALE FEHLERABFANGUNG ---
 process.on('uncaughtException', async (error) => {
@@ -19,26 +20,53 @@ process.on('unhandledRejection', async (reason) => {
 });
 // -------------------------------
 
-let isSyncing = false; 
+let isSyncing = false;
 let isPreMatchChecking = false;
 let isDailySyncing = false;
 let isMorningReminderRunning = false;
 let isEveningReminderRunning = false;
 let isBotRunning = false;
+let isFixtureSyncing = false;
 
 console.log(`[${new Date().toISOString()}] WM 2026 Backend Scheduler gestartet...`);
+
+// Wiederverwendbarer, gegen Überschneidungen geschützter Wrapper für den Spielplan-Sync.
+async function runFixtureSyncSafe(trigger) {
+  if (isFixtureSyncing) return;
+  isFixtureSyncing = true;
+  try {
+    await syncFixtures();
+  } catch (error) {
+    console.error(`Kritischer Fehler im Spielplan-Sync (${trigger}):`, error);
+    await sendErrorAlert(`Cron: Fixture-Sync (${trigger})`, error);
+  } finally {
+    isFixtureSyncing = false;
+  }
+}
+
+// Direkt beim Start einmal den Spielplan prüfen, damit neue Spiele
+// (z.B. Round of 32) nicht erst beim nächsten Intervall auftauchen.
+runFixtureSyncSafe('Startup');
 
 // 1. Live-Sync (Jede Minute)
 cron.schedule('* * * * *', async () => {
   if (isSyncing) return;
   isSyncing = true;
+  let newlyFinished = 0;
   try {
-    await syncLiveMatches();
+    newlyFinished = await syncLiveMatches();
   } catch (error) {
     console.error("Kritischer Fehler im Live-Sync-Zyklus:", error);
     await sendErrorAlert('Cron: Live-Sync', error);
   } finally {
     isSyncing = false;
+  }
+
+  // Sobald ein Spiel beendet wurde, kann eine neue K.o.-Paarung feststehen.
+  // Daher direkt den Spielplan-Sync anstoßen, statt aufs 30-Minuten-Intervall zu warten.
+  if (newlyFinished > 0) {
+    console.log(`[Live-Sync] ${newlyFinished} Spiel(e) beendet -> Spielplan-Sync wird angestoßen.`);
+    await runFixtureSyncSafe('Spiel beendet');
   }
 });
 
@@ -97,6 +125,12 @@ cron.schedule('0 18 * * *', async () => {
     isEveningReminderRunning = false;
   }
 });
+// 6b. Spielplan-Sync (Alle 30 Minuten): nimmt neue Spiele auf, sobald die
+//     Paarungen feststehen (z.B. Round of 32, Achtelfinale ...).
+cron.schedule('*/30 * * * *', async () => {
+  await runFixtureSyncSafe('Intervall 30min');
+});
+
 // 6. Bot-Wetten platzieren (Alle 10 Minuten)
 cron.schedule('*/10 * * * *', async () => {
   if (isBotRunning) return;
